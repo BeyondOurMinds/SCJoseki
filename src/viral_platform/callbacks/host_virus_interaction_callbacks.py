@@ -216,7 +216,9 @@ def register_host_virus_interaction_callbacks(app):
             _hvi_analysis_tracker.finish()
             return "done", "No dataset available for viral burden analysis.", ""
         
-        features = history.get("viral_detection", {}).get("viral_features", "")
+        viral_detection_state = history.get("viral_detection", {})
+        features = viral_detection_state.get("viral_features", "")
+        matched_features_by_gene = viral_detection_state.get("matched_features_by_gene", {})
         history = None # remove local history object to free memory
         if not features:
             _hvi_analysis_tracker.finish()
@@ -231,7 +233,12 @@ def register_host_virus_interaction_callbacks(app):
             _hvi_analysis_tracker.finish()
             return "done", "No valid viral features detected. Please run viral gene detection first.", ""
         
-        viral_gene_features = get_features_for_gene(adata, selected_gene)
+        # Reuse the feature mapping produced during detection instead of re-normalizing
+        # feature names here, since get_features_for_gene's normalization (without the
+        # reference viral gene names) can fail to resolve substring-matched features.
+        viral_gene_features = matched_features_by_gene.get(selected_gene)
+        if not viral_gene_features:
+            viral_gene_features = get_features_for_gene(adata, selected_gene)
         
         # Run host-virus interaction analysis
         resolved_min_cells = int(min_cells) if min_cells is not None else 10
