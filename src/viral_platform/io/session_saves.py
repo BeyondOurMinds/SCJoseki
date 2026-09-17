@@ -386,21 +386,28 @@ def _build_log_text():
 def _resolve_export_directory():
     """Return a writable directory for exported files.
 
-    In Docker, callers can mount a host volume at /exports or set
-    SCJOSEKI_EXPORT_DIR to any writable path. The directory is created
-    automatically so users do not need to pre-create it.
+    In Docker/headless Linux environments, callers can mount a host
+    volume at /exports or set SCJOSEKI_EXPORT_DIR to any writable path.
+    On desktop platforms, return None so that a native save dialog
+    can be displayed.
     """
     override_dir = os.getenv("SCJOSEKI_EXPORT_DIR")
+
     if override_dir:
         export_dir = Path(override_dir).expanduser()
         export_dir.mkdir(parents=True, exist_ok=True)
         return export_dir
 
-    if tk is None or filedialog is None or not os.environ.get("DISPLAY"):
+    # Linux/headless environments without a display
+    if (
+        os.name != "nt"
+        and not os.environ.get("DISPLAY")
+    ):
         export_dir = Path("/exports")
         export_dir.mkdir(parents=True, exist_ok=True)
         return export_dir
 
+    # Desktop environments: use native save dialog
     return None
 
 

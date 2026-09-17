@@ -209,3 +209,4 @@ __marimo__/
 # Extra Stuff:
 *.db-journal
 /.upload_cache
+assets/.gitattributes
