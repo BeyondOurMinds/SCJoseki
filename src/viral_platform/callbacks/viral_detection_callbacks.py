@@ -10,6 +10,9 @@ from viral_platform.analysis.viral_gene_detection import (
 	normalize_gene_name,
 )
 from viral_platform.state.dataset_store import cache_results, get_dataset, get_state_store, get_working_dataset, update_state_store
+from viral_platform.utils.runtime_tracker import get_tracker
+
+_viral_detection_tracker = get_tracker("Viral Gene Detection")
 
 
 def help_icon():
@@ -476,6 +479,7 @@ def register_vd_callbacks(app):
 		State("custom-gene-list-input", "value"),
 		State("virus-select-dropdown", "value"),
 	)
+	@_viral_detection_tracker.track
 	def run_viral_gene_detection(n_clicks, selected_method, custom_gene_list, selected_virus):
 		"""Execute viral detection and return rendered results.
 
@@ -496,7 +500,8 @@ def register_vd_callbacks(app):
 			return no_update, no_update
 
 		if selected_method == "automatic":
-			detected = find_viral_genes(selected_virus)
+			with _viral_detection_tracker.phase("analysis"):
+				detected = find_viral_genes(selected_virus)
 			detected_by_virus = _normalize_automatic_detection_payload(detected, selected_virus)
 			gene_count_per_virus = {}
 			detected_gene_sets = {}
@@ -538,13 +543,17 @@ def register_vd_callbacks(app):
 			)
 
 			if unique_count > 0:
+				with _viral_detection_tracker.phase("visualization"):
+					result = create_viral_gene_detection_results("\u2713", "#198754", gene_count_per_virus, detected_features, gene_entries, unique_count, detected_gene_sets=detected_gene_sets)
 				return (
 					"Automatic detection completed",
-					create_viral_gene_detection_results("\u2713", "#198754", gene_count_per_virus, detected_features, gene_entries, unique_count, detected_gene_sets=detected_gene_sets),
+					result,
 				)
+			with _viral_detection_tracker.phase("visualization"):
+				result = create_viral_gene_detection_results("\u2717", "#dc3545", gene_count_per_virus, detected_features, [], 0, detected_gene_sets=detected_gene_sets)
 			return (
 				"Automatic detection completed, but no viral genes were detected.",
-				create_viral_gene_detection_results("\u2717", "#dc3545", gene_count_per_virus, detected_features, [], 0, detected_gene_sets=detected_gene_sets),
+				result,
 			)
 
 		detected = find_custom_viral_genes(custom_gene_list)
@@ -571,13 +580,17 @@ def register_vd_callbacks(app):
 		)
 		gene_count_per_virus = {"Custom List": unique_count}
 		if unique_count > 0:
+			with _viral_detection_tracker.phase("visualization"):
+				result = create_viral_gene_detection_results("\u2713", "#198754", gene_count_per_virus, detected_features, gene_entries, unique_count, not_found, detected_gene_sets)
 			return (
 				"Custom detection completed",
-				create_viral_gene_detection_results("\u2713", "#198754", gene_count_per_virus, detected_features, gene_entries, unique_count, not_found, detected_gene_sets),
+				result,
 			)
+		with _viral_detection_tracker.phase("visualization"):
+			result = create_viral_gene_detection_results("\u2717", "#dc3545", gene_count_per_virus, detected_features, [], 0, not_found, detected_gene_sets)
 		return (
 			"Custom detection completed, but no viral genes were detected.",
-			create_viral_gene_detection_results("\u2717", "#dc3545", gene_count_per_virus, detected_features, [], 0, not_found, detected_gene_sets),
+			result,
 		)
 
 	@app.callback(

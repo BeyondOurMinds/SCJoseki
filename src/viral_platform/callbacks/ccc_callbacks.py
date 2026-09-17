@@ -28,9 +28,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import networkx as nx
-
+from viral_platform.utils.runtime_tracker import get_tracker
 
 logger = logging.getLogger(__name__)
+
+_ccc_tracker = get_tracker("Cell-Cell Communication")
 
 MAX_DROPDOWN_CATEGORY_VALUES = 500  # Maximum number of unique values allowed in the source/target dropdowns to prevent performance issues.
 DEFAULT_CCC_RENDER_ROWS = (
@@ -948,6 +950,7 @@ def register_ccc_callbacks(app):
         State("ccc-default-render-rows-input", "value"),
         prevent_initial_call=True,
     )
+    @_ccc_tracker.track
     def run_ccc_analysis(
         n_clicks,
         dataset_version,
@@ -1016,60 +1019,63 @@ def register_ccc_callbacks(app):
             logger.info("Reusing cached CCC results for key=%s", cache_key)
         else:
             # Run the CCC analysis using the provided parameters.
-            liana_results = run_liana(adata, grouping_variable, method, resource)
-            prepared_results = _prepare_liana_for_display(liana_results)
+            with _ccc_tracker.phase("analysis"):
+                liana_results = run_liana(adata, grouping_variable, method, resource)
+                prepared_results = _prepare_liana_for_display(liana_results)
             update_state_store(
                 CCC_results={"results": prepared_results, "cache_key": cache_key}
             )
 
         update_state_store(CCC_active_context="uploaded")
 
-        filtered_results = filter_liana_results(
-            prepared_results,
-            max_magnitude_rank=max_magnitude_rank,
-            max_specificity_rank=max_specificity_rank,
-        )
+        with _ccc_tracker.phase("processing"):
+            filtered_results = filter_liana_results(
+                prepared_results,
+                max_magnitude_rank=max_magnitude_rank,
+                max_specificity_rank=max_specificity_rank,
+            )
 
-        display_results = _display_rows(filtered_results, default_render_rows)
+            display_results = _display_rows(filtered_results, default_render_rows)
 
-        results_table = liana_output_table(display_results)
-        results_table = make_sortable_table(results_table, "ccc-results-table")
-        # The summary represents every LIANA result.  Only the interaction-level
-        # table is capped, because rendering thousands of individual marks is
-        # what slows the browser down.
-        summary = summarise_celltype_interactions(filtered_results)
+            results_table = liana_output_table(display_results)
+            results_table = make_sortable_table(results_table, "ccc-results-table")
+            # The summary represents every LIANA result.  Only the interaction-level
+            # table is capped, because rendering thousands of individual marks is
+            # what slows the browser down.
+            summary = summarise_celltype_interactions(filtered_results)
 
-        # Network plot generation
-        network_fig = create_network_plot(summary)
+            # Network plot generation
+            network_fig = create_network_plot(summary)
 
-        fig = px.scatter(
-            summary,
-            x="target",
-            y="source",
-            size="bubble_size",
-            color="bubble_color",
-            labels={"bubble_color": "Interaction strength"},
-            hover_data=[
-                "interaction_count",
-                "mean_magnitude",
-                "mean_specificity",
-            ],
-        )
-        fig.update_coloraxes(colorbar_title_text="Interaction<br>strength")
+            fig = px.scatter(
+                summary,
+                x="target",
+                y="source",
+                size="bubble_size",
+                color="bubble_color",
+                labels={"bubble_color": "Interaction strength"},
+                hover_data=[
+                    "interaction_count",
+                    "mean_magnitude",
+                    "mean_specificity",
+                ],
+            )
+            fig.update_coloraxes(colorbar_title_text="Interaction<br>strength")
 
-        fig.update_yaxes(categoryorder="category ascending")
-        fig.update_layout(
-            template="plotly_white",
-            title="Cell-Cell Communication Bubble Plot",
-        )
+            fig.update_yaxes(categoryorder="category ascending")
+            fig.update_layout(
+                template="plotly_white",
+                title="Cell-Cell Communication Bubble Plot",
+            )
 
-        bubble_graph = dcc.Graph(figure=fig)
-        network_graph = dcc.Graph(figure=network_fig)
-        cache_results(**{
-            "ccc-summary-container": results_table,
-            "ccc-bubble-plot-container": bubble_graph,
-            "ccc-network-plot-container": network_graph,
-        })
+        with _ccc_tracker.phase("visualization"):
+            bubble_graph = dcc.Graph(figure=fig)
+            network_graph = dcc.Graph(figure=network_fig)
+            cache_results(**{
+                "ccc-summary-container": results_table,
+                "ccc-bubble-plot-container": bubble_graph,
+                "ccc-network-plot-container": network_graph,
+            })
         return (
             "done",
             results_table,

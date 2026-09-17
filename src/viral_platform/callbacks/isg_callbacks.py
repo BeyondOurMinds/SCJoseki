@@ -20,6 +20,10 @@ from viral_platform.state.dataset_store import (
 	sync_state_with_dataset,
 	update_state_store,
 )
+from viral_platform.utils.runtime_tracker import get_tracker
+
+_isg_detection_tracker = get_tracker("ISG: Detection")
+_isg_summary_tracker = get_tracker("ISG: Summary Stats")
 
 
 def help_icon():
@@ -601,6 +605,7 @@ def register_isg_callbacks(app):
 		State("custom-isg-gene-list-input", "value"),
 		State("isg-set-select-dropdown", "value"),
 	)
+	@_isg_detection_tracker.track
 	def run_isg_detection(n_clicks, selected_method, custom_gene_list, selected_set):
 		"""Execute ISG detection and render results.
 
@@ -621,7 +626,8 @@ def register_isg_callbacks(app):
 			return no_update, no_update
 
 		if selected_method == "automatic":
-			detected = find_isg_genes(selected_set)
+			with _isg_detection_tracker.phase("analysis"):
+				detected = find_isg_genes(selected_set)
 			detected_by_set = _normalize_automatic_detection_payload(detected, selected_set)
 			gene_count_per_set = {}
 			total_genes_per_set = {}
@@ -666,9 +672,8 @@ def register_isg_callbacks(app):
 			)
 
 			if unique_count > 0:
-				return (
-					"Automatic ISG detection completed",
-					create_isg_detection_results(
+				with _isg_detection_tracker.phase("visualization"):
+					result = create_isg_detection_results(
 						"\u2713",
 						"#198754",
 						gene_count_per_set,
@@ -677,12 +682,14 @@ def register_isg_callbacks(app):
 						detected_gene_entries,
 						unique_count,
 						detected_gene_sets=detected_gene_sets,
-					),
+					)
+				return (
+					"Automatic ISG detection completed",
+					result,
 				)
 
-			return (
-				"Automatic ISG detection completed, but no ISGs were detected.",
-				create_isg_detection_results(
+			with _isg_detection_tracker.phase("visualization"):
+				result = create_isg_detection_results(
 					"\u2717",
 					"#dc3545",
 					gene_count_per_set,
@@ -691,7 +698,10 @@ def register_isg_callbacks(app):
 					[],
 					0,
 					detected_gene_sets=detected_gene_sets,
-				),
+				)
+			return (
+				"Automatic ISG detection completed, but no ISGs were detected.",
+				result,
 			)
 
 		if not custom_gene_list:
@@ -727,9 +737,8 @@ def register_isg_callbacks(app):
 		)
 
 		if unique_count > 0:
-			return (
-				"Custom ISG detection completed",
-				create_isg_detection_results(
+			with _isg_detection_tracker.phase("visualization"):
+				result = create_isg_detection_results(
 					"\u2713",
 					"#198754",
 					gene_count_per_set,
@@ -739,12 +748,14 @@ def register_isg_callbacks(app):
 					unique_count,
 					not_found,
 					detected_gene_sets,
-				),
+				)
+			return (
+				"Custom ISG detection completed",
+				result,
 			)
 
-		return (
-			"Custom ISG detection completed, but no ISGs were detected.",
-			create_isg_detection_results(
+		with _isg_detection_tracker.phase("visualization"):
+			result = create_isg_detection_results(
 				"\u2717",
 				"#dc3545",
 				gene_count_per_set,
@@ -754,7 +765,10 @@ def register_isg_callbacks(app):
 				0,
 				not_found,
 				detected_gene_sets,
-			),
+			)
+		return (
+			"Custom ISG detection completed, but no ISGs were detected.",
+			result,
 		)
 
 	@app.callback(
@@ -905,6 +919,7 @@ def register_isg_callbacks(app):
 		Input("run-isg-summary-button", "n_clicks"),
 		prevent_initial_call=True,
 	)
+	@_isg_summary_tracker.track
 	def run_isg_summary_stats(n_clicks):
 		"""Compute and display ISG score summary statistics.
 
@@ -943,16 +958,19 @@ def register_isg_callbacks(app):
 		if adata is None:
 			return "done", "No dataset available for ISG summary statistics."
 
-		sc.tl.score_genes(
-			adata,
-			gene_list=isg_genes,
-			score_name="ISG_score",
-		)
-		adata.obs["ISG_score"] = adata.obs["ISG_score"]
+		with _isg_summary_tracker.phase("analysis"):
+			sc.tl.score_genes(
+				adata,
+				gene_list=isg_genes,
+				score_name="ISG_score",
+			)
+			adata.obs["ISG_score"] = adata.obs["ISG_score"]
 
 		set_working_dataset(adata)
 		sync_state_with_dataset(adata)
 
-		result = isg_summary_results(adata)
-		cache_results(**{"isg-summary-results-container": result})
+		with _isg_summary_tracker.phase("processing"):
+			result = isg_summary_results(adata)
+		with _isg_summary_tracker.phase("visualization"):
+			cache_results(**{"isg-summary-results-container": result})
 		return "done", result

@@ -6,9 +6,12 @@ from dash.exceptions import PreventUpdate
 from viral_platform.io.session_saves import (
     create_export_bundle,
 )
+from viral_platform.utils.runtime_tracker import get_tracker, print_runtime_report
 
 
 logger = logging.getLogger(__name__)
+
+_export_tracker = get_tracker("Export")
 
 
 def register_save_callbacks(app):
@@ -29,13 +32,19 @@ def register_save_callbacks(app):
         if not n_clicks:
             raise PreventUpdate
 
+        _export_tracker.begin()
+
         try:
-            result = create_export_bundle()
+            with _export_tracker.phase("analysis"):
+                result = create_export_bundle()
 
         except Exception as exc:
             logger.exception(
                 "Full export bundle failed."
             )
+
+            _export_tracker.finish()
+            print_runtime_report()
 
             return html.P(
                 f"Export failed: {exc}",
@@ -44,12 +53,13 @@ def register_save_callbacks(app):
                 },
             )
 
-        status = result.get(
-            "status"
-        )
+        with _export_tracker.phase("processing"):
+            status = result.get(
+                "status"
+            )
 
         if status == "cancelled":
-            return html.P(
+            output = html.P(
                 result.get(
                     "message",
                     "Export cancelled.",
@@ -59,84 +69,91 @@ def register_save_callbacks(app):
                 },
             )
 
-        if status == "partial":
-            details = [
-                html.P(
-                    result.get(
-                        "message",
-                        "Export partially completed.",
-                    ),
-                    style={
-                        "color": "#856404"
-                    },
-                )
-            ]
-
-            zip_path = result.get(
-                "zip_path"
-            )
-
-            if zip_path:
-                details.append(
+        elif status == "partial":
+            with _export_tracker.phase("visualization"):
+                details = [
                     html.P(
-                        f"ZIP saved to: {zip_path}",
+                        result.get(
+                            "message",
+                            "Export partially completed.",
+                        ),
                         style={
                             "color": "#856404"
                         },
                     )
+                ]
+
+                zip_path = result.get(
+                    "zip_path"
                 )
 
-            return html.Div(details)
+                if zip_path:
+                    details.append(
+                        html.P(
+                            f"ZIP saved to: {zip_path}",
+                            style={
+                                "color": "#856404"
+                            },
+                        )
+                    )
 
-        # ---------------------------------------------------------
-        # Successful export
-        # ---------------------------------------------------------
+                output = html.Div(details)
 
-        details = [
-            html.P(
-                "Export completed successfully.",
-                style={
-                    "color": "#146c43"
-                },
-            )
-        ]
+        else:
+            # ---------------------------------------------------------
+            # Successful export
+            # ---------------------------------------------------------
+            with _export_tracker.phase("visualization"):
+                details = [
+                    html.P(
+                        "Export completed successfully.",
+                        style={
+                            "color": "#146c43"
+                        },
+                    )
+                ]
 
-        zip_path = result.get(
-            "zip_path"
-        )
-
-        h5ad_path = result.get(
-            "h5ad_path"
-        )
-
-        if zip_path:
-            details.append(
-                html.P(
-                    f"ZIP: {zip_path}",
-                    style={
-                        "color": "#146c43"
-                    },
+                zip_path = result.get(
+                    "zip_path"
                 )
-            )
 
-        if h5ad_path:
-            details.append(
-                html.P(
-                    f"H5AD: {h5ad_path}",
-                    style={
-                        "color": "#146c43"
-                    },
+                h5ad_path = result.get(
+                    "h5ad_path"
                 )
-            )
 
-        for note in result.get(
-            "notes",
-            [],
-        ):
-            details.append(
-                html.P(
-                    note
-                )
-            )
+                if zip_path:
+                    details.append(
+                        html.P(
+                            f"ZIP: {zip_path}",
+                            style={
+                                "color": "#146c43"
+                            },
+                        )
+                    )
 
-        return html.Div(details)
+                if h5ad_path:
+                    details.append(
+                        html.P(
+                            f"H5AD: {h5ad_path}",
+                            style={
+                                "color": "#146c43"
+                            },
+                        )
+                    )
+
+                for note in result.get(
+                    "notes",
+                    [],
+                ):
+                    details.append(
+                        html.P(
+                            note
+                        )
+                    )
+
+                output = html.Div(details)
+
+        _export_tracker.finish()
+        print_runtime_report()
+
+        return output

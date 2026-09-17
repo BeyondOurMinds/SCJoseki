@@ -24,8 +24,11 @@ from viral_platform.utils.reference_file_utils import (
     read_downloaded_reference_file_map,
     read_downloaded_reference_filenames,
 )
+from viral_platform.utils.runtime_tracker import get_tracker
 
 logger = logging.getLogger(__name__)
+
+_de_tracker = get_tracker("Differential Expression")
 
 MAX_DROPDOWN_CATEGORY_VALUES = 500
 DE_REFERENCE_SUFFIXES = ("_degs.json", "_degs_top.json", "_gene_heatmap.json")
@@ -1020,8 +1023,11 @@ def register_differential_expression_callbacks(app):
                 no_update,
             )
 
+        _de_tracker.begin()
+
         adata_for_values = get_working_dataset()
         if adata_for_values is None:
+            _de_tracker.finish()
             return (
                 "Upload a dataset to run differential expression analysis.",
                 "Upload a dataset to run differential expression analysis.",
@@ -1031,6 +1037,7 @@ def register_differential_expression_callbacks(app):
             )
 
         if not celltype_column or celltype_column not in adata_for_values.obs.columns:
+            _de_tracker.finish()
             return (
                 "Select a valid cell type column before running differential expression.",
                 "Select a valid cell type column before running differential expression.",
@@ -1055,6 +1062,7 @@ def register_differential_expression_callbacks(app):
             ]
 
         if not target_celltypes:
+            _de_tracker.finish()
             return (
                 "No cell types available for differential expression analysis.",
                 "No cell types available for differential expression analysis.",
@@ -1081,24 +1089,25 @@ def register_differential_expression_callbacks(app):
         # each section can be rendered as its own collapsible output.
         for ct in target_celltypes:
             print(f"Running DE for {ct}")
-            adata = subset_cells(grouping, group1, group2, ct, celltype_column)
+            with _de_tracker.phase("analysis"):
+                adata = subset_cells(grouping, group1, group2, ct, celltype_column)
+                if adata is not None:
+                    adata, results = run_differential_expression(
+                        adata,
+                        grouping,
+                        group1,
+                        group2,
+                        ct,
+                        min_psbulk_cells=min_psbulk_cells if min_psbulk_cells is not None else 10,
+                        min_psbulk_counts=min_psbulk_counts if min_psbulk_counts is not None else 1000,
+                        min_gene_count=min_gene_count if min_gene_count is not None else 10,
+                        min_samples_per_gene=min_samples_per_gene if min_samples_per_gene is not None else 2,
+                    )
             if adata is None:
                 logger.warning(
                     "Skipping DE for cell type '%s' due to missing/invalid subset.", ct
                 )
                 continue
-
-            adata, results = run_differential_expression(
-                adata,
-                grouping,
-                group1,
-                group2,
-                ct,
-                min_psbulk_cells=min_psbulk_cells if min_psbulk_cells is not None else 10,
-                min_psbulk_counts=min_psbulk_counts if min_psbulk_counts is not None else 1000,
-                min_gene_count=min_gene_count if min_gene_count is not None else 10,
-                min_samples_per_gene=min_samples_per_gene if min_samples_per_gene is not None else 2,
-            )
             if adata is None or not hasattr(adata, "obs"):
                 logger.warning(
                     "Skipping DE for cell type '%s' due to failed DE analysis.", ct
@@ -1201,10 +1210,11 @@ def register_differential_expression_callbacks(app):
             # Per-celltype DE result table with native sortable columns.
             if hasattr(results, "reset_index"):
                 results_table_df = results.reset_index()
-                de_table_content = _build_de_table_component(
-                    results_table_df,
-                    {"type": "de-results-table", "celltype": str(ct)},
-                )
+                with _de_tracker.phase("processing"):
+                    de_table_content = _build_de_table_component(
+                        results_table_df,
+                        {"type": "de-results-table", "celltype": str(ct)},
+                    )
             else:
                 de_table_content = html.Div(
                     f"DE results for {ct} are not available in table format."
@@ -1223,11 +1233,12 @@ def register_differential_expression_callbacks(app):
             # Build a volcano plot for this cell type using DE outputs.
             volcano_content = html.Div(f"Volcano plot for {ct} is not available.")
             if hasattr(results, "reset_index"):
-                volcano_content = _build_volcano_component(
-                    results.reset_index().copy(),
-                    ct,
-                    graph_id={"type": "de-volcano-plot", "celltype": str(ct)},
-                )
+                with _de_tracker.phase("processing"):
+                    volcano_content = _build_volcano_component(
+                        results.reset_index().copy(),
+                        ct,
+                        graph_id={"type": "de-volcano-plot", "celltype": str(ct)},
+                    )
 
             volcano_items.append(
                 dbc.AccordionItem(
@@ -1240,13 +1251,14 @@ def register_differential_expression_callbacks(app):
             # Build a top-20 DE gene heatmap for this cell type.
             heatmap_content = html.Div(f"Heatmap for {ct} is not available.")
             if hasattr(results, "reset_index"):
-                heatmap_content = _build_top_genes_heatmap_from_results(
-                    adata,
-                    results.reset_index().copy(),
-                    grouping,
-                    ct,
-                    graph_id={"type": "de-heatmap-plot", "celltype": str(ct)},
-                )
+                with _de_tracker.phase("processing"):
+                    heatmap_content = _build_top_genes_heatmap_from_results(
+                        adata,
+                        results.reset_index().copy(),
+                        grouping,
+                        ct,
+                        graph_id={"type": "de-heatmap-plot", "celltype": str(ct)},
+                    )
 
             heatmap_items.append(
                 dbc.AccordionItem(
@@ -1275,6 +1287,7 @@ def register_differential_expression_callbacks(app):
             )
 
         if completed == 0:
+            _de_tracker.finish()
             return "No valid cell type analyses could be completed.", "No valid cell type analyses could be completed.", "No valid cell type analyses could be completed.", "No valid cell type analyses could be completed.", "No valid cell type analyses could be completed."
 
         logger.info(
@@ -1288,41 +1301,42 @@ def register_differential_expression_callbacks(app):
         de_results = f"Differential expression analysis completed successfully for {completed} cell type(s)."
         # Wrap each result type in its own accordion so every cell type remains
         # collapsed by default and the output stays compact.
-        pseudobulk_output = dbc.Accordion(
-            pseudobulk_items,
-            start_collapsed=True,
-            always_open=True,
-            flush=True,
-            id="pseudobulk-accordion",
-        )
-        de_output = dbc.Accordion(
-            de_items,
-            start_collapsed=True,
-            always_open=True,
-            flush=True,
-            id="de-results-accordion",
-        )
-        volcano_output = dbc.Accordion(
-            volcano_items,
-            start_collapsed=True,
-            always_open=True,
-            flush=True,
-            id="volcano-results-accordion",
-        )
-        heatmap_output = dbc.Accordion(
-            heatmap_items,
-            start_collapsed=True,
-            always_open=True,
-            flush=True,
-            id="de-heatmap-accordion",
-        )
+        with _de_tracker.phase("visualization"):
+            pseudobulk_output = dbc.Accordion(
+                pseudobulk_items,
+                start_collapsed=True,
+                always_open=True,
+                flush=True,
+                id="pseudobulk-accordion",
+            )
+            de_output = dbc.Accordion(
+                de_items,
+                start_collapsed=True,
+                always_open=True,
+                flush=True,
+                id="de-results-accordion",
+            )
+            volcano_output = dbc.Accordion(
+                volcano_items,
+                start_collapsed=True,
+                always_open=True,
+                flush=True,
+                id="volcano-results-accordion",
+            )
+            heatmap_output = dbc.Accordion(
+                heatmap_items,
+                start_collapsed=True,
+                always_open=True,
+                flush=True,
+                id="de-heatmap-accordion",
+            )
 
-        cache_results(**{
-            "pseudobulk-container": pseudobulk_output,
-            "de-table-container": de_output,
-            "volcano-plot-container": volcano_output,
-            "de-heatmap-container": heatmap_output,
-        })
+            cache_results(**{
+                "pseudobulk-container": pseudobulk_output,
+                "de-table-container": de_output,
+                "volcano-plot-container": volcano_output,
+                "de-heatmap-container": heatmap_output,
+            })
 
 
         # For each cell type dataframe, normalize the gene column and replace the updated frame in the dictionary (for pathway enrichment later)
@@ -1333,4 +1347,5 @@ def register_differential_expression_callbacks(app):
             de_results_by_celltype[celltype] = normalized_df
         
         update_state_store(**{"DE_results": {"results_by_celltype": de_results_by_celltype}})
+        _de_tracker.finish()
         return de_results, pseudobulk_output, de_output, volcano_output, heatmap_output

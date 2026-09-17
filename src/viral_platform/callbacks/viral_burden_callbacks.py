@@ -7,8 +7,12 @@ import pandas as pd
 import plotly.express as px
 import logging
 from viral_platform.utils.sample_column_utils import normalize_column_name, resolve_sample_column
+from viral_platform.utils.runtime_tracker import get_tracker
 
 logger = logging.getLogger(__name__)
+
+_viral_burden_tracker = get_tracker("Viral Burden: Analysis")
+_viral_burden_assoc_tracker = get_tracker("Viral Burden: Associations")
 
 
 def _build_options(values):
@@ -374,6 +378,7 @@ def register_viral_burden_callbacks(app):
         State("viral-burden-infected-threshold-input", "value"),
         prevent_initial_call=True,
     )
+    @_viral_burden_tracker.track
     def run_viral_burden_analysis(
         n_clicks,
         selected_celltype_column,
@@ -433,47 +438,48 @@ def register_viral_burden_callbacks(app):
             return "done", message, message, message, message, message, True
         
         # grabbing raw counts matrix from adata.layers["counts"]
-        matrix = (adata.layers["counts"])
+        with _viral_burden_tracker.phase("analysis"):
+            matrix = (adata.layers["counts"])
 
-        # extracting only viral features
-        viral_matrix = matrix[:, adata.var_names.isin(features)].copy()
+            # extracting only viral features
+            viral_matrix = matrix[:, adata.var_names.isin(features)].copy()
 
-        # Sum viral counts per cell
-        viral_counts = viral_matrix.sum(axis=1)
-        if hasattr(viral_counts, "A1"):  # Check if it's a sparse matrix
-            viral_counts = viral_counts.A1  # Convert to 1D array
-        else:
-            viral_counts = np.array(viral_counts).flatten()  # Ensure it's a 1D array
+            # Sum viral counts per cell
+            viral_counts = viral_matrix.sum(axis=1)
+            if hasattr(viral_counts, "A1"):  # Check if it's a sparse matrix
+                viral_counts = viral_counts.A1  # Convert to 1D array
+            else:
+                viral_counts = np.array(viral_counts).flatten()  # Ensure it's a 1D array
 
-        
-        # store raw viral counts in adata.obs
-        adata.obs["viral_counts"] = viral_counts
+            
+            # store raw viral counts in adata.obs
+            adata.obs["viral_counts"] = viral_counts
 
 
-        # calculate viral burden
-        adata.obs["viral_burden"] = (
-            adata.obs["viral_counts"] / adata.obs["total_counts"]
-        )
+            # calculate viral burden
+            adata.obs["viral_burden"] = (
+                adata.obs["viral_counts"] / adata.obs["total_counts"]
+            )
 
-        # percentage burden
-        adata.obs["viral_burden_percent"] = adata.obs["viral_burden"] * 100
+            # percentage burden
+            adata.obs["viral_burden_percent"] = adata.obs["viral_burden"] * 100
 
-        #infection status
-        resolved_infected_threshold = (
-            float(infected_threshold) if infected_threshold is not None else 0.0
-        )
-        adata.obs["infection_status"] = np.where(
-            adata.obs["viral_counts"] > resolved_infected_threshold,
-            "Infected",
-            "Bystander",
-        )
+            #infection status
+            resolved_infected_threshold = (
+                float(infected_threshold) if infected_threshold is not None else 0.0
+            )
+            adata.obs["infection_status"] = np.where(
+                adata.obs["viral_counts"] > resolved_infected_threshold,
+                "Infected",
+                "Bystander",
+            )
 
-        # log1p transformation of viral counts
-        adata.obs["log1p_viral_counts"] = np.log1p(adata.obs["viral_counts"])
+            # log1p transformation of viral counts
+            adata.obs["log1p_viral_counts"] = np.log1p(adata.obs["viral_counts"])
 
-        # update the working dataset in the state store
-        set_working_dataset(adata)
-        sync_state_with_dataset(adata)
+            # update the working dataset in the state store
+            set_working_dataset(adata)
+            sync_state_with_dataset(adata)
 
 
         logger.info("Viral burden analysis completed successfully.")
@@ -498,28 +504,30 @@ def register_viral_burden_callbacks(app):
             )
         )
 
-        infection_umap = _build_infection_umap(adata)
-        viral_burden_umap = _build_viral_burden_umap(adata)
-        violin_plots = _build_violin_plots(
-            adata,
-            celltype_col=celltype_col,
-            condition_col=condition_col,
-            sample_col=sample_col,
-            metadata_sample_columns=metadata_sample_columns,
-        )
-        celltype_fraction_plot = _build_celltype_infection_fraction_plot(
-            adata,
-            celltype_col=celltype_col,
-        )
+        with _viral_burden_tracker.phase("processing"):
+            infection_umap = _build_infection_umap(adata)
+            viral_burden_umap = _build_viral_burden_umap(adata)
+            violin_plots = _build_violin_plots(
+                adata,
+                celltype_col=celltype_col,
+                condition_col=condition_col,
+                sample_col=sample_col,
+                metadata_sample_columns=metadata_sample_columns,
+            )
+            celltype_fraction_plot = _build_celltype_infection_fraction_plot(
+                adata,
+                celltype_col=celltype_col,
+            )
 
-        result_components = {
-            "viral-burden-results-container": viral_burden_results(adata),
-            "viral-burden-infection-umap-container": infection_umap,
-            "viral-burden-umap-container": viral_burden_umap,
-            "viral-burden-violin-container": violin_plots,
-            "viral-burden-celltype-fraction-container": celltype_fraction_plot,
-        }
-        cache_results(**result_components)
+        with _viral_burden_tracker.phase("visualization"):
+            result_components = {
+                "viral-burden-results-container": viral_burden_results(adata),
+                "viral-burden-infection-umap-container": infection_umap,
+                "viral-burden-umap-container": viral_burden_umap,
+                "viral-burden-violin-container": violin_plots,
+                "viral-burden-celltype-fraction-container": celltype_fraction_plot,
+            }
+            cache_results(**result_components)
         return (
             "done",
             result_components["viral-burden-results-container"],
@@ -540,6 +548,7 @@ def register_viral_burden_callbacks(app):
         State("viral-burden-association-fdr-threshold-input", "value"),
         prevent_initial_call=True,
     )
+    @_viral_burden_assoc_tracker.track
     def run_viral_burden_associations(n_clicks, min_cells, corr_threshold, fdr_threshold):
         """Run viral burden association analysis and render full/significant result tables."""
         if n_clicks is None or n_clicks == 0:
@@ -566,38 +575,41 @@ def register_viral_burden_callbacks(app):
             resolved_corr_threshold = float(corr_threshold) if corr_threshold is not None else 0.3
             resolved_fdr_threshold = float(fdr_threshold) if fdr_threshold is not None else 0.05
 
-            associations_df = calculate_viral_burden_associations(
-                features,
-                min_cells=resolved_min_cells,
-            )
-            logger.info("Viral burden association analysis completed successfully.")
-            significant_associations_df = identify_significant_associations(
-                associations_df,
-                corr_threshold=resolved_corr_threshold,
-                fdr_threshold=resolved_fdr_threshold,
-            )
+            with _viral_burden_assoc_tracker.phase("analysis"):
+                associations_df = calculate_viral_burden_associations(
+                    features,
+                    min_cells=resolved_min_cells,
+                )
+                logger.info("Viral burden association analysis completed successfully.")
+                significant_associations_df = identify_significant_associations(
+                    associations_df,
+                    corr_threshold=resolved_corr_threshold,
+                    fdr_threshold=resolved_fdr_threshold,
+                )
             logger.info("Significant viral burden associations identified successfully.")
-            full_table = make_sortable_table(associations_df, "viral-burden-associations-table")
-            significant_table = make_sortable_table(significant_associations_df, "viral-burden-significant-associations-table")
+            with _viral_burden_assoc_tracker.phase("processing"):
+                full_table = make_sortable_table(associations_df, "viral-burden-associations-table")
+                significant_table = make_sortable_table(significant_associations_df, "viral-burden-significant-associations-table")
 
-            full_table_section = html.Div(
-                [
-                    html.H5("Full Associations Table", style={"marginBottom": "8px"}),
-                    full_table,
-                ],
-                style={"marginBottom": "20px"},
-            )
-            significant_table_section = html.Div(
-                [
-                    html.H5("Significant Associations Table", style={"marginBottom": "8px"}),
-                    significant_table,
-                ]
-            )
+                full_table_section = html.Div(
+                    [
+                        html.H5("Full Associations Table", style={"marginBottom": "8px"}),
+                        full_table,
+                    ],
+                    style={"marginBottom": "20px"},
+                )
+                significant_table_section = html.Div(
+                    [
+                        html.H5("Significant Associations Table", style={"marginBottom": "8px"}),
+                        significant_table,
+                    ]
+                )
 
-            cache_results(**{
-                "viral-burden-associations-results-container": full_table_section,
-                "viral-burden-associations-significant-results-container": significant_table_section,
-            })
+            with _viral_burden_assoc_tracker.phase("visualization"):
+                cache_results(**{
+                    "viral-burden-associations-results-container": full_table_section,
+                    "viral-burden-associations-significant-results-container": significant_table_section,
+                })
             return (
                 "done",
                 full_table_section,

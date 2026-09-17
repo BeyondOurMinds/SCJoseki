@@ -5,8 +5,11 @@ import plotly.express as px
 
 from viral_platform.plotting.QC_plots import create_qc_plots
 from viral_platform.state.dataset_store import cache_results, get_state_store, get_working_dataset, set_working_dataset, update_state_store
+from viral_platform.utils.runtime_tracker import get_tracker
 
 logger = logging.getLogger(__name__)
+
+_qc_tracker = get_tracker("QC Plots")
 
 
 def register_qc_callbacks(app):
@@ -20,16 +23,22 @@ def register_qc_callbacks(app):
             # Page remounts invoke this callback with the initial button value.
             # Preserve the component restored from the shared results cache.
             return no_update, no_update
+        _qc_tracker.begin()
         adata = get_working_dataset()
         if adata is None:
             logger.warning("QC plot generation requested without an active dataset.")
+            _qc_tracker.finish()
             return "done", "Upload a dataset to view QC plots."
         try:
-            result = create_qc_plots(adata)
-            cache_results(**{"qc-temp-container": result})
+            with _qc_tracker.phase("processing"):
+                result = create_qc_plots(adata)
+            with _qc_tracker.phase("visualization"):
+                cache_results(**{"qc-temp-container": result})
+            _qc_tracker.finish()
             return "done", result
         except Exception:
             logger.exception("Failed to render QC plots.")
+            _qc_tracker.finish()
             return "done", "An error occurred while generating QC plots."
     
     @app.callback(

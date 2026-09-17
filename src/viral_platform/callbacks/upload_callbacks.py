@@ -7,8 +7,11 @@ from dash import Input, Output, State, html, no_update
 
 from viral_platform.app import UPLOAD_FOLDER
 from viral_platform.io.loaders import load_file_from_path
+from viral_platform.utils.runtime_tracker import get_tracker
 
 logger = logging.getLogger(__name__)
+
+_upload_tracker = get_tracker("File Upload")
 
 
 def _cleanup_uploaded_cache_file(file_path):
@@ -49,6 +52,8 @@ def register_upload_callbacks(app):
             logger.info("Upload callback received non-complete state.")
             return no_update, no_update
 
+        _upload_tracker.begin()
+
         root_folder = Path(UPLOAD_FOLDER)
         if upload_id:
             root_folder = root_folder / str(upload_id)
@@ -59,6 +64,7 @@ def register_upload_callbacks(app):
 
         if not file_paths:
             logger.info("Upload callback triggered with no files.")
+            _upload_tracker.finish()
             return html.P("No file uploaded yet."), no_update
 
         file_path = file_paths[0]
@@ -66,9 +72,11 @@ def register_upload_callbacks(app):
         logger.info("Chunked upload completed: %s", file_path)
 
         try:
-            adata = load_file_from_path(file_path)
+            with _upload_tracker.phase("analysis"):
+                adata = load_file_from_path(file_path)
         except Exception as exc:
             logger.exception("Failed to process uploaded file: %s", filename)
+            _upload_tracker.finish()
             return (
                 html.Div([
                     html.H5(f"Uploaded file: {filename}"),
@@ -86,19 +94,25 @@ def register_upload_callbacks(app):
             adata.n_vars,
         )
 
-        sample_count = adata.uns.get("sample_count")
-        dataset_message = f"Loaded dataset with {adata.n_obs} cells and {adata.n_vars} genes."
-        if sample_count:
-            dataset_message = (
-                f"Loaded dataset with {adata.n_obs} cells and {adata.n_vars} genes "
-                f"from {sample_count} sample(s)."
-            )
+        with _upload_tracker.phase("processing"):
+            sample_count = adata.uns.get("sample_count")
+            dataset_message = f"Loaded dataset with {adata.n_obs} cells and {adata.n_vars} genes."
+            if sample_count:
+                dataset_message = (
+                    f"Loaded dataset with {adata.n_obs} cells and {adata.n_vars} genes "
+                    f"from {sample_count} sample(s)."
+                )
 
-        return (
-            html.Div([
+        with _upload_tracker.phase("visualization"):
+            output = html.Div([
                 html.H5(f"Uploaded file: {filename}"),
                 html.P(dataset_message),
-            ]),
+            ])
+
+        _upload_tracker.finish()
+
+        return (
+            output,
             str(uuid.uuid4()),
         )
 

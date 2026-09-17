@@ -4,9 +4,12 @@ import numpy as np
 import textwrap
 from viral_platform.state.dataset_store import cache_results, get_state_store
 from viral_platform.analysis.PathwayEnrichment import run_pathway_enrichment
+from viral_platform.utils.runtime_tracker import get_tracker
 import logging
 
 logger = logging.getLogger(__name__)
+
+_pathway_tracker = get_tracker("Pathway Enrichment")
 
 
 def create_pe_table(enrichment_results):
@@ -294,6 +297,7 @@ def register_pathway_enrichment_callbacks(app):
         State("pathway-enrichment-pvalue-cutoff-input", "value"),
         State("pathway-enrichment-logfc-cutoff-input", "value"),
     )
+    @_pathway_tracker.track
     def run_pathway_enrichment_callback(
         n_clicks,
         celltype,
@@ -321,13 +325,14 @@ def register_pathway_enrichment_callbacks(app):
         de_results = de_results_by_celltype[celltype]
         
         # Run pathway enrichment analysis
-        enrichment_payload = run_pathway_enrichment(
-            de_results,
-            method,
-            gene_set,
-            pvalue_cutoff=pvalue_cutoff if pvalue_cutoff is not None else 0.05,
-            logfc_cutoff=logfc_cutoff if logfc_cutoff is not None else 1.0,
-        )
+        with _pathway_tracker.phase("analysis"):
+            enrichment_payload = run_pathway_enrichment(
+                de_results,
+                method,
+                gene_set,
+                pvalue_cutoff=pvalue_cutoff if pvalue_cutoff is not None else 0.05,
+                logfc_cutoff=logfc_cutoff if logfc_cutoff is not None else 1.0,
+            )
         if enrichment_payload is None:
             logger.warning("Pathway enrichment analysis returned no results.")
             return no_update, "No pathway enrichment results found.", "No pathway enrichment results", "No pathway enrichment results"
@@ -340,29 +345,31 @@ def register_pathway_enrichment_callbacks(app):
 
         
         # Cache the results for future use
-        table = create_pe_table(enrichment_results)
-        if method == "ORA":
-            dotplot_fig = _build_ora_dotplot(enrichment_results)
-            dotplot_graph = dcc.Graph(figure=dotplot_fig)
-            barplot_fig = _build_ora_barplot(enrichment_results)
-            barplot_graph = dcc.Graph(figure=barplot_fig)
-        elif method == "GSEA":
-            dotplot_fig = _build_gsea_dotplot(
-                enrichment_results,
-                fdr_cutoff=pvalue_cutoff if pvalue_cutoff is not None else 0.05,
-            )
-            dotplot_graph = dcc.Graph(figure=dotplot_fig)
-            barplot_fig = _build_gsea_barplot(
-                enrichment_results,
-                fdr_cutoff=pvalue_cutoff if pvalue_cutoff is not None else 0.05,
-            )
-            barplot_graph = dcc.Graph(figure=barplot_fig)
+        with _pathway_tracker.phase("processing"):
+            table = create_pe_table(enrichment_results)
+            if method == "ORA":
+                dotplot_fig = _build_ora_dotplot(enrichment_results)
+                dotplot_graph = dcc.Graph(figure=dotplot_fig)
+                barplot_fig = _build_ora_barplot(enrichment_results)
+                barplot_graph = dcc.Graph(figure=barplot_fig)
+            elif method == "GSEA":
+                dotplot_fig = _build_gsea_dotplot(
+                    enrichment_results,
+                    fdr_cutoff=pvalue_cutoff if pvalue_cutoff is not None else 0.05,
+                )
+                dotplot_graph = dcc.Graph(figure=dotplot_fig)
+                barplot_fig = _build_gsea_barplot(
+                    enrichment_results,
+                    fdr_cutoff=pvalue_cutoff if pvalue_cutoff is not None else 0.05,
+                )
+                barplot_graph = dcc.Graph(figure=barplot_fig)
 
 
-        cache_results(**{
-            "pathway-enrichment-results-container": table,
-            "pathway-enrichment-dot-plot-container": dotplot_graph,
-            "pathway-enrichment-bar-plot-container": barplot_graph
-        })
+        with _pathway_tracker.phase("visualization"):
+            cache_results(**{
+                "pathway-enrichment-results-container": table,
+                "pathway-enrichment-dot-plot-container": dotplot_graph,
+                "pathway-enrichment-bar-plot-container": barplot_graph
+            })
 
         return "done", table, dotplot_graph, barplot_graph

@@ -8,8 +8,13 @@ from pathlib import Path
 import logging
 import pandas as pd
 
+from viral_platform.utils.runtime_tracker import get_tracker
+
 
 logger = logging.getLogger(__name__)
+
+_hvi_analysis_tracker = get_tracker("Host-Virus Interaction: Analysis")
+_hvi_interpretation_tracker = get_tracker("Host-Virus Interaction: Interpretation")
 
 INTACT_VIRUS_TAXIDS = {
     "EBV": {
@@ -204,14 +209,17 @@ def register_host_virus_interaction_callbacks(app):
         """
         if not n_clicks or n_clicks == 0:
             return no_update, no_update, no_update
+        _hvi_analysis_tracker.begin()
         history = get_state_store()
         adata = get_working_dataset()
         if adata is None:
+            _hvi_analysis_tracker.finish()
             return "done", "No dataset available for viral burden analysis.", ""
         
         features = history.get("viral_detection", {}).get("viral_features", "")
         history = None # remove local history object to free memory
         if not features:
+            _hvi_analysis_tracker.finish()
             return "done", "No viral features detected. Please run viral gene detection first.", ""
 
         if isinstance(features, str):
@@ -220,6 +228,7 @@ def register_host_virus_interaction_callbacks(app):
             features = [f for f in features if f]
 
         if not features:
+            _hvi_analysis_tracker.finish()
             return "done", "No valid viral features detected. Please run viral gene detection first.", ""
         
         viral_gene_features = get_features_for_gene(adata, selected_gene)
@@ -228,20 +237,23 @@ def register_host_virus_interaction_callbacks(app):
         resolved_min_cells = int(min_cells) if min_cells is not None else 10
         resolved_adj_p_cutoff = float(adj_p_cutoff) if adj_p_cutoff is not None else 0.05
         resolved_corr_cutoff = float(corr_cutoff) if corr_cutoff is not None else 0.15
-        results = host_virus_interaction(
-            adata,
-            features,
-            selected_gene,
-            viral_gene_features,
-            min_cells=resolved_min_cells,
-        )
+        with _hvi_analysis_tracker.phase("analysis"):
+            results = host_virus_interaction(
+                adata,
+                features,
+                selected_gene,
+                viral_gene_features,
+                min_cells=resolved_min_cells,
+            )
 
         # results table
         if results.empty:
+            _hvi_analysis_tracker.finish()
             return "", "No significant host-virus interactions found.", ""
         
         # summary table
-        hsi_summary = dbc.Table(
+        with _hvi_analysis_tracker.phase("processing"):
+            hsi_summary = dbc.Table(
             [
                 html.Tbody([
                     html.Th("Host-Virus Interaction Summary", colSpan=2, style={"textAlign": "center", "fontWeight": "bold"}),
@@ -261,11 +273,13 @@ def register_host_virus_interaction_callbacks(app):
         update_state_store(**{"host-virus-interaction": {"sig_host_genes": sig_host_genes["gene"].tolist()}})
         
         
-        table = make_sortable_table(results, "host-virus-interaction-results-table")
-        cache_results(**{
-            "host-virus-interaction-results-container": table,
-            "host-virus-interaction-summary-container": hsi_summary,
-        })
+        with _hvi_analysis_tracker.phase("visualization"):
+            table = make_sortable_table(results, "host-virus-interaction-results-table")
+            cache_results(**{
+                "host-virus-interaction-results-container": table,
+                "host-virus-interaction-summary-container": hsi_summary,
+            })
+        _hvi_analysis_tracker.finish()
         return "", table, hsi_summary
     
     @app.callback(
@@ -345,6 +359,8 @@ def register_host_virus_interaction_callbacks(app):
         if not n_clicks or n_clicks == 0:
             return no_update, no_update, no_update
         
+        _hvi_interpretation_tracker.begin()
+
         reference_path = Path(__file__).parent.parent / "intact" / "intact_virus_host.tsv"
         
         intact_df = load_intact_reference(
@@ -357,6 +373,7 @@ def register_host_virus_interaction_callbacks(app):
         )
 
         if not virus_taxids:
+            _hvi_interpretation_tracker.finish()
             return "done", f"No IntAct reference data found for virus: {selected_virus}.", []
 
         intact_virus = intact_df[
@@ -371,6 +388,7 @@ def register_host_virus_interaction_callbacks(app):
             )
 
             if not de_results_by_celltype:
+                _hvi_interpretation_tracker.finish()
                 return "done", "No differential expression results found. Run DE analysis first.", []
 
             for celltype, df in de_results_by_celltype.items():
@@ -387,6 +405,7 @@ def register_host_virus_interaction_callbacks(app):
             else:
                 de_results = de_results_by_celltype.get(selected_celltype)
                 if de_results is None:
+                    _hvi_interpretation_tracker.finish()
                     return "done", f"No DE results found for cell type: {selected_celltype}.", []
                 genes = get_de_genes_for_celltype(de_results_by_celltype, selected_celltype)
                 gene_to_celltypes = {
@@ -394,14 +413,16 @@ def register_host_virus_interaction_callbacks(app):
                     for gene in genes
                 }
             
-            raw_matches, summary = run_intact_interpretation(
-                intact_virus,
-                genes,
-                gene_to_celltypes,
-            )
+            with _hvi_interpretation_tracker.phase("analysis"):
+                raw_matches, summary = run_intact_interpretation(
+                    intact_virus,
+                    genes,
+                    gene_to_celltypes,
+                )
 
             # results table
             if raw_matches.empty:
+                _hvi_interpretation_tracker.finish()
                 return "done", f"No significant host-virus interactions found for virus: {selected_virus} and cell type: {selected_celltype}.", []
             
         elif gene_source == "isg":
@@ -410,12 +431,14 @@ def register_host_virus_interaction_callbacks(app):
             genes = state.get("isg_detection", {}).get("isg_genes", [])
             gene_list = _coerce_gene_list(genes)
             if not gene_list:
+                _hvi_interpretation_tracker.finish()
                 return "done", "No ISG genes found. Run ISG analysis first.", []
             print(f"ISG genes: {gene_list}")
-            raw_matches, summary = run_intact_interpretation(
-                intact_virus,
-                gene_list,
-            )
+            with _hvi_interpretation_tracker.phase("analysis"):
+                raw_matches, summary = run_intact_interpretation(
+                    intact_virus,
+                    gene_list,
+                )
         elif gene_source == "hvi":
             # Load significant host genes from the state
             state = get_state_store()
@@ -423,29 +446,37 @@ def register_host_virus_interaction_callbacks(app):
                 state.get("host-virus-interaction", {}).get("sig_host_genes", [])
             )
             if not genes:
+                _hvi_interpretation_tracker.finish()
                 return "done", "No significant host genes found. Run host-virus interaction analysis first.", []
             print(f"Significant host genes: {genes}")
-            raw_matches, summary = run_intact_interpretation(
-                intact_virus,
-                genes,
-            )
+            with _hvi_interpretation_tracker.phase("analysis"):
+                raw_matches, summary = run_intact_interpretation(
+                    intact_virus,
+                    genes,
+                )
         elif gene_source == "custom":
             if not custom_gene_list:
+                _hvi_interpretation_tracker.finish()
                 return "done", "No custom gene list provided.", []
             genes = _coerce_gene_list(custom_gene_list)
             if not genes:
+                _hvi_interpretation_tracker.finish()
                 return "done", "No valid custom genes were provided.", []
-            raw_matches, summary = run_intact_interpretation(
-                intact_virus,
-                genes,
-            )
+            with _hvi_interpretation_tracker.phase("analysis"):
+                raw_matches, summary = run_intact_interpretation(
+                    intact_virus,
+                    genes,
+                )
 
-        table = make_sortable_table(summary, "host-virus-interaction-interpretation-results-table")
-        elements = build_intact_cytoscape_elements(summary)
-        cache_results(**{
-        "host-virus-interaction-interpretation-results-container": table,
-        "host-virus-interaction-network": elements,
-        })
+        with _hvi_interpretation_tracker.phase("processing"):
+            table = make_sortable_table(summary, "host-virus-interaction-interpretation-results-table")
+            elements = build_intact_cytoscape_elements(summary)
+        with _hvi_interpretation_tracker.phase("visualization"):
+            cache_results(**{
+            "host-virus-interaction-interpretation-results-container": table,
+            "host-virus-interaction-network": elements,
+            })
 
+        _hvi_interpretation_tracker.finish()
         return "done", table, elements
         

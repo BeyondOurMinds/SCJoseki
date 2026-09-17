@@ -3,12 +3,16 @@ from viral_platform.state.dataset_store import cache_results, get_working_datase
 from viral_platform.analysis.preprocessing import preprocess_data, run_clustering
 from viral_platform.plotting.elbow_plot import create_elbow_plot
 from viral_platform.plotting.clustering import create_umap_plot
+from viral_platform.utils.runtime_tracker import get_tracker
 import plotly.express as px
 import plotly.graph_objects as go
 import logging
 
 
 logger = logging.getLogger(__name__)
+
+_preprocess_tracker = get_tracker("Preprocessing: Run")
+_pca_tracker = get_tracker("Preprocessing: PCA Selection")
 
 
 def register_preprocessing_callbacks(app):
@@ -46,21 +50,28 @@ def register_preprocessing_callbacks(app):
     def run_preprocessing(n_clicks, n_top_genes, scale_max_value):
         if not n_clicks:
             return no_update, no_update
+        _preprocess_tracker.begin()
         try:
-            preprocess_data(
-                n_top_genes=n_top_genes if n_top_genes is not None else 2000,
-                scale_max_value=scale_max_value if scale_max_value is not None else 10,
-            )
-            adata = get_working_dataset()
+            with _preprocess_tracker.phase("analysis"):
+                preprocess_data(
+                    n_top_genes=n_top_genes if n_top_genes is not None else 2000,
+                    scale_max_value=scale_max_value if scale_max_value is not None else 10,
+                )
+                adata = get_working_dataset()
             if adata is None:
                 logger.warning("Preprocessing completed but no dataset found in state store.")
+                _preprocess_tracker.finish()
                 return no_update, "Preprocessing completed, but no dataset found."
             logger.info("Preprocessing completed successfully.")
-            result = create_elbow_plot(adata)
-            cache_results(**{"preprocess-temp-container": result})
+            with _preprocess_tracker.phase("processing"):
+                result = create_elbow_plot(adata)
+            with _preprocess_tracker.phase("visualization"):
+                cache_results(**{"preprocess-temp-container": result})
+            _preprocess_tracker.finish()
             return no_update, result
         except Exception as exc:
             logger.exception("Preprocessing failed: %s", str(exc))
+            _preprocess_tracker.finish()
             return no_update, f"Preprocessing failed: {str(exc)}"
         
     @app.callback(
@@ -98,15 +109,20 @@ def register_preprocessing_callbacks(app):
     def apply_pca_selection(n_clicks, n_pcs, n_neighbors):
         if not n_clicks or n_pcs is None:
             return no_update, no_update
+        _pca_tracker.begin()
         try:
             logger.info("Apply PCA selection clicked. n_clicks=%s, n_pcs=%s", n_clicks, n_pcs)
-            run_clustering(
-                n_dims=n_pcs,
-                n_neighbors=n_neighbors if n_neighbors is not None else 10,
-            )
+            with _pca_tracker.phase("analysis"):
+                run_clustering(
+                    n_dims=n_pcs,
+                    n_neighbors=n_neighbors if n_neighbors is not None else 10,
+                )
             logger.info("PCA selection applied successfully with %d PCs.", n_pcs)
-            graph = create_umap_plot()
-            cache_results(**{"selected-pcs-output": graph})
+            with _pca_tracker.phase("processing"):
+                graph = create_umap_plot()
+            with _pca_tracker.phase("visualization"):
+                cache_results(**{"selected-pcs-output": graph})
+            _pca_tracker.finish()
             return f"PCA selection applied with {n_pcs} PCs.", graph
         except Exception as exc:
             logger.exception("Failed to apply PCA selection: %s", str(exc))
