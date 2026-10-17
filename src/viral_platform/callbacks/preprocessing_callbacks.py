@@ -12,7 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 _preprocess_tracker = get_tracker("Preprocessing: Run")
-_pca_tracker = get_tracker("Preprocessing: PCA Selection")
+_pca_tracker = get_tracker("Preprocessing: UMAP & Clustering")
 
 
 def register_preprocessing_callbacks(app):

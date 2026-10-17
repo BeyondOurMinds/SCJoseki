@@ -10,6 +10,7 @@ from viral_platform.utils.runtime_tracker import get_tracker
 logger = logging.getLogger(__name__)
 
 _qc_tracker = get_tracker("QC Plots")
+_qc_filter_tracker = get_tracker("QC: Apply Filters")
 
 
 def register_qc_callbacks(app):
@@ -155,6 +156,7 @@ def register_qc_callbacks(app):
         State("min-features-slider", "value"),
         State("max-percent-mt-slider", "value")
     )
+    @_qc_filter_tracker.track
     def apply_qc_filters(n_clicks, min_counts, min_features, max_percent_mt):
         if n_clicks == 0:
             return no_update
@@ -165,25 +167,26 @@ def register_qc_callbacks(app):
             return "No dataset available to apply QC filters."
 
         try:
-            if not min_counts or len(min_counts) != 2:
-                raise ValueError("Invalid nCount range provided.")
-            if not min_features or len(min_features) != 2:
-                raise ValueError("Invalid nFeature range provided.")
-            if max_percent_mt is None:
-                raise ValueError("Invalid percent.mt threshold provided.")
+            with _qc_filter_tracker.phase("analysis"):
+                if not min_counts or len(min_counts) != 2:
+                    raise ValueError("Invalid nCount range provided.")
+                if not min_features or len(min_features) != 2:
+                    raise ValueError("Invalid nFeature range provided.")
+                if max_percent_mt is None:
+                    raise ValueError("Invalid percent.mt threshold provided.")
 
-            adata = adata[adata.obs["nCount_RNA"] >= min_counts[0]]
-            adata = adata[adata.obs["nCount_RNA"] <= min_counts[1]]
-            adata = adata[adata.obs["nFeature_RNA"] >= min_features[0]]
-            adata = adata[adata.obs["nFeature_RNA"] <= min_features[1]]
-            adata = adata[adata.obs["percent.mt"] <= max_percent_mt]
+                adata = adata[adata.obs["nCount_RNA"] >= min_counts[0]]
+                adata = adata[adata.obs["nCount_RNA"] <= min_counts[1]]
+                adata = adata[adata.obs["nFeature_RNA"] >= min_features[0]]
+                adata = adata[adata.obs["nFeature_RNA"] <= min_features[1]]
+                adata = adata[adata.obs["percent.mt"] <= max_percent_mt]
 
-            set_working_dataset(adata)
-            update_state_store(
-                nCount_RNA={"min": float(min_counts[0]), "max": float(min_counts[1])},
-                nFeature_RNA={"min": float(min_features[0]), "max": float(min_features[1])},
-                percent_mt=float(max_percent_mt),
-            )
+                set_working_dataset(adata)
+                update_state_store(
+                    nCount_RNA={"min": float(min_counts[0]), "max": float(min_counts[1])},
+                    nFeature_RNA={"min": float(min_features[0]), "max": float(min_features[1])},
+                    percent_mt=float(max_percent_mt),
+                )
             logger.info(
                 "Applied QC filters: nCount=%s, nFeature=%s, max_percent_mt=%s. Remaining cells: %s",
                 min_counts,
@@ -191,8 +194,10 @@ def register_qc_callbacks(app):
                 max_percent_mt,
                 adata.n_obs,
             )
-            result = create_qc_plots(adata)
-            cache_results(**{"qc-temp-container": result, "qc-plot-container": result})
+            with _qc_filter_tracker.phase("processing"):
+                result = create_qc_plots(adata)
+            with _qc_filter_tracker.phase("visualization"):
+                cache_results(**{"qc-temp-container": result, "qc-plot-container": result})
             return result
         except Exception:
             logger.exception("Failed to apply QC filters.")
