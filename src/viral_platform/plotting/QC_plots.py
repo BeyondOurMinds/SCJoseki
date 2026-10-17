@@ -69,7 +69,16 @@ def create_qc_plots(adata):
             max=adata.obs["percent.mt"].max(),
             value=adata.obs["percent.mt"].max(),
         ),
-        html.Button("Apply QC Filters", id="apply-qc-filters-button", n_clicks=0, style={"marginTop": "20px"})
+        html.Button("Apply QC Filters", id="apply-qc-filters-button", n_clicks=0, style={"marginTop": "20px"}),
+        html.Hr(),
+        html.H4("Doublet Detection (Scrublet)"),
+        dcc.Checklist(
+            id="doublet-filter-checklist",
+            options=[{"label": " Remove predicted doublets", "value": "filter"}],
+            value=[],
+        ),
+        html.Button("Run Scrublet", id="run-scrublet-button", n_clicks=0, style={"marginTop": "10px"}),
+        dcc.Loading(html.Div(id="scrublet-result")),
     ],
     id="qc-plot-container")
 
