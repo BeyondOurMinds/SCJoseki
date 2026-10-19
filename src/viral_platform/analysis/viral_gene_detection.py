@@ -73,8 +73,15 @@ def normalize_gene_name(gene, viral_names=None):
             rf'(?![A-Za-z0-9])'
         )
 
-        if re.search(pattern, gene):
+        if re.search(pattern, gene, flags=re.IGNORECASE):
             return viral_gene
+
+    # Short symbols (S, E, M, N) match only after an underscore prefix (any prefix, e.g. CoV2_S).
+    # Hyphen is excluded so host genes like HLA-E are not captured.
+    if "_" in gene:
+        tail = gene.rsplit("_", 1)[-1]
+        if tail in viral_names:
+            return tail
 
     return gene
 
@@ -284,3 +291,89 @@ def find_custom_viral_genes(custom_gene_list):
     detected["not_found"] = sorted(detected["not_found"])
 
     return detected
+
+
+# Sets that hold user-chosen genes; never reassigned between viruses.
+USER_SETS = {"Manual Append", "Custom List"}
+
+
+def find_ambiguous_features(per_virus):
+    """Return {feature: {virus: gene}} for features matched by more than one virus set.
+
+    per_virus: {virus: {gene_key: iterable[feature]}}.
+    """
+    feature_hits = {}
+    for virus, gene_map in per_virus.items():
+        if virus in USER_SETS:
+            continue
+        for gene, features in gene_map.items():
+            for feature in features:
+                feature_hits.setdefault(feature, {})[virus] = gene
+    return {
+        feature: hits
+        for feature, hits in sorted(feature_hits.items())
+        if len(hits) > 1
+    }
+
+
+def apply_virus_assignments(per_virus, assignments):
+    """Attribute ambiguous features to one virus and split colliding gene names.
+
+    assignments: {feature: virus}; falsy virus values are ignored.
+    A feature is removed from every other virus set. If a resolved gene name
+    still exists in several viruses, each entry is renamed "GENE (Virus)" so they
+    are tracked as separate genes.
+    """
+    new = {
+        virus: {gene: set(features) for gene, features in gene_map.items()}
+        for virus, gene_map in per_virus.items()
+    }
+    resolved_genes = set()
+
+    for feature, chosen in (assignments or {}).items():
+        if not chosen or chosen not in new:
+            continue
+        for gene, features in new[chosen].items():
+            if feature in features:
+                resolved_genes.add(gene)
+        for virus, gene_map in new.items():
+            if virus == chosen or virus in USER_SETS:
+                continue
+            for gene in list(gene_map):
+                gene_map[gene].discard(feature)
+                if not gene_map[gene]:
+                    del gene_map[gene]
+
+    for gene in resolved_genes:
+        holders = [v for v, gene_map in new.items() if gene in gene_map and v not in USER_SETS]
+        if len(holders) < 2:
+            continue
+        for virus in holders:
+            qualified = f"{gene} ({virus})"
+            new[virus].setdefault(qualified, set()).update(new[virus].pop(gene))
+
+    return {virus: gene_map for virus, gene_map in new.items() if gene_map}
+
+
+def derive_detection_state(per_virus):
+    """Flatten per-virus matches into the shared viral_detection state fields."""
+    detected_gene_sets = {}
+    matched = {}
+    for virus, gene_map in sorted(per_virus.items()):
+        if not gene_map:
+            continue
+        detected_gene_sets[virus] = sorted(gene_map)
+        for gene, features in gene_map.items():
+            matched.setdefault(gene, set()).update(features)
+
+    return {
+        "viral_genes": ", ".join(sorted(matched)),
+        "viral_features": ", ".join(sorted({f for feats in matched.values() for f in feats})),
+        "detected_gene_sets": detected_gene_sets,
+        "matched_features_by_gene": {gene: sorted(feats) for gene, feats in sorted(matched.items())},
+        "per_virus_matches": {
+            virus: {gene: sorted(features) for gene, features in sorted(gene_map.items())}
+            for virus, gene_map in sorted(per_virus.items())
+            if gene_map
+        },
+    }

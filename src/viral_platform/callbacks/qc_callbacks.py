@@ -1,6 +1,6 @@
 import logging
 
-from dash import Input, Output, State, html, no_update
+from dash import Input, Output, State, dcc, html, no_update
 import plotly.express as px
 
 from viral_platform.plotting.QC_plots import create_qc_plots
@@ -149,6 +149,37 @@ def register_qc_callbacks(app):
             logger.exception("Failed to update percent.mt violin figure.")
             return px.violin(title="Percent Mitochondrial Genes")
     
+    @app.callback(
+        Output("scrublet-result", "children"),
+        Input("run-scrublet-button", "n_clicks"),
+        State("doublet-filter-checklist", "value"),
+        prevent_initial_call=True,
+    )
+    def run_scrublet(n_clicks, filter_opts):
+        if not n_clicks:
+            return no_update
+        adata = get_working_dataset()
+        if adata is None:
+            return "No dataset available."
+        try:
+            import scanpy as sc
+
+            # Scrublet expects raw counts in X.
+            sc.pp.scrublet(adata)
+            n_doublets = int(adata.obs["predicted_doublet"].sum())
+            msg = f"Detected {n_doublets} predicted doublets out of {adata.n_obs} cells."
+            if filter_opts and "filter" in filter_opts:
+                filtered = adata[~adata.obs["predicted_doublet"].astype(bool)].copy()
+                set_working_dataset(filtered)
+                msg += f" Removed them; {filtered.n_obs} cells remain. Regenerate QC plots to refresh."
+                adata = filtered
+            fig = px.histogram(adata.obs, x="doublet_score", nbins=50, title="Doublet scores")
+            fig.update_layout(template="plotly_white")
+            return html.Div([html.P(msg), dcc.Graph(figure=fig)])
+        except Exception:
+            logger.exception("Scrublet failed.")
+            return "Scrublet failed. Ensure X contains raw counts."
+
     @app.callback(
         Output("qc-plot-container", "children"),
         Input("apply-qc-filters-button", "n_clicks"),

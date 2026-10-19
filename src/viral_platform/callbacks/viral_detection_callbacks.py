@@ -1,9 +1,12 @@
 import re
 
-from dash import Input, Output, State, ctx, dcc, html, no_update
+from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
 import dash_bootstrap_components as dbc
 
 from viral_platform.analysis.viral_gene_detection import (
+	apply_virus_assignments,
+	derive_detection_state,
+	find_ambiguous_features,
 	find_custom_viral_genes,
 	find_viral_genes,
 	list_viral_gene_sets,
@@ -185,6 +188,63 @@ def _format_detected_grouped_list(set_to_genes, empty_message):
 	return " ".join(parts) if parts else empty_message
 
 
+def _load_per_virus(viral_state):
+	"""Read {virus: {gene: set(features)}} from state, rebuilding it for older state shapes."""
+	stored = viral_state.get("per_virus_matches")
+	if stored is not None:
+		return {
+			virus: {gene: set(features) for gene, features in gene_map.items()}
+			for virus, gene_map in stored.items()
+		}
+
+	matched = viral_state.get("matched_features_by_gene", {})
+	sets = viral_state.get("detected_gene_sets", {})
+	return {
+		virus: {gene: set(matched.get(gene, [])) for gene in genes}
+		for virus, genes in sets.items()
+	}
+
+
+def _build_ambiguity_children(ambiguous):
+	"""Render one virus-selector row per feature matched by several viruses."""
+	if not ambiguous:
+		return [html.P("No features are shared between viruses.", style={"fontSize": "13px", "color": "#6c757d"})]
+
+	rows = [
+		html.P(
+			"These dataset features matched genes with the same name in more than one virus. "
+			"Choose the virus each feature belongs to, then submit. Features left blank stay matched to all listed viruses.",
+			style={"fontSize": "13px", "color": "#6c757d"},
+		)
+	]
+	for feature, hits in ambiguous.items():
+		genes = sorted(set(hits.values()))
+		rows.append(
+			dbc.Row(
+				[
+					dbc.Col(
+						[
+							html.Span(feature, style={"fontWeight": "600"}),
+							html.Span(f"  (gene {', '.join(genes)})", style={"fontSize": "12px", "color": "#6c757d"}),
+						],
+						width=4,
+					),
+					dbc.Col(
+						dcc.Dropdown(
+							id={"type": "viral-ambiguity-select", "feature": feature},
+							options=[{"label": virus, "value": virus} for virus in sorted(hits)],
+							value=None,
+							placeholder="Select virus",
+						)
+					),
+				],
+				align="center",
+				className="mb-2",
+			)
+		)
+	return rows
+
+
 def _normalize_automatic_detection_payload(detected, selected_virus):
 	"""Return a per-virus mapping regardless of finder return shape."""
 	if not isinstance(detected, dict):
@@ -199,7 +259,7 @@ def _normalize_automatic_detection_payload(detected, selected_virus):
 	return detected
 
 
-def create_viral_gene_detection_results(pass_fail, color, gene_count_per_virus, detected_features, gene_entries, unique_count, not_found=None, detected_gene_sets=None):
+def create_viral_gene_detection_results(pass_fail, color, gene_count_per_virus, detected_features, gene_entries, unique_count, not_found=None, detected_gene_sets=None, ambiguous=None):
 	"""Render full viral detection results UI with curation controls.
 
 	Use:
@@ -344,7 +404,20 @@ def create_viral_gene_detection_results(pass_fail, color, gene_count_per_virus, 
 									),
 								],
 								title="Detected Genes" + (f", {len(not_found)} not found" if not_found else ""),
-							)
+							),
+							dbc.AccordionItem(
+								[
+									html.Div(id="viral-ambiguity-container", children=_build_ambiguity_children(ambiguous)),
+									dbc.Button(
+										"Submit",
+										id="submit-viral-ambiguity-button",
+										color="primary",
+										size="sm",
+										style={"marginTop": "8px"},
+									),
+								],
+								title="Resolve Shared Genes" + (f" ({len(ambiguous)} features)" if ambiguous else ""),
+							),
 						]
 					)
 				],
@@ -527,30 +600,23 @@ def register_vd_callbacks(app):
 			detected_features = sorted(set(detected_features))
 			unique_count = len(all_genes)
 			gene_entries = _build_viral_gene_entries(all_genes, matched_features_by_gene)
-			update_state_store(
-				viral_detection={
-					"viral_genes": ", ".join(all_genes),
-					"viral_features": ", ".join(detected_features),
-					"detected_gene_sets": {
-						set_name: sorted(set(genes))
-						for set_name, genes in sorted(detected_gene_sets.items())
-					},
-					"matched_features_by_gene": {
-						gene: sorted(features)
-						for gene, features in sorted(matched_features_by_gene.items())
-					},
+			per_virus = {
+				virus_name: {
+					gene: set(features)
+					for gene, features in value.get("matched_features_by_gene", {}).items()
 				}
-			)
+				for virus_name, value in detected_by_virus.items()
+				if isinstance(value, dict) and value.get("genes")
+			}
+			update_state_store(viral_detection=derive_detection_state(per_virus))
+			ambiguous = find_ambiguous_features(per_virus)
 
 			if unique_count > 0:
 				with _viral_detection_tracker.phase("visualization"):
-					result = create_viral_gene_detection_results("\u2713", "#198754", gene_count_per_virus, detected_features, gene_entries, unique_count, detected_gene_sets=detected_gene_sets)
-				return (
-					"Automatic detection completed",
-					result,
-				)
+					result = create_viral_gene_detection_results("\u2713", "#198754", gene_count_per_virus, detected_features, gene_entries, unique_count, detected_gene_sets=detected_gene_sets, ambiguous=ambiguous)
+				return "Automatic detection completed", result
 			with _viral_detection_tracker.phase("visualization"):
-				result = create_viral_gene_detection_results("\u2717", "#dc3545", gene_count_per_virus, detected_features, [], 0, detected_gene_sets=detected_gene_sets)
+				result = create_viral_gene_detection_results("\u2717", "#dc3545", gene_count_per_virus, detected_features, [], 0, detected_gene_sets=detected_gene_sets, ambiguous=ambiguous)
 			return (
 				"Automatic detection completed, but no viral genes were detected.",
 				result,
@@ -567,17 +633,7 @@ def register_vd_callbacks(app):
 		not_found = detected["not_found"] if detected["not_found"] else None
 		detected_gene_sets = {"Custom List": all_genes}
 		gene_entries = _build_viral_gene_entries(all_genes, matched_features_by_gene)
-		update_state_store(
-			viral_detection={
-				"viral_genes": ", ".join(all_genes),
-				"viral_features": ", ".join(detected_features),
-				"detected_gene_sets": {"Custom List": all_genes},
-				"matched_features_by_gene": {
-					gene: sorted(features)
-					for gene, features in sorted(matched_features_by_gene.items())
-				},
-			}
-		)
+		update_state_store(viral_detection=derive_detection_state({"Custom List": matched_features_by_gene}))
 		gene_count_per_virus = {"Custom List": unique_count}
 		if unique_count > 0:
 			with _viral_detection_tracker.phase("visualization"):
@@ -600,13 +656,17 @@ def register_vd_callbacks(app):
 		Output("detected-viral-unique-count", "children"),
 		Output("append-viral-genes-alert", "children"),
 		Output("append-viral-genes-alert", "is_open"),
+		Output("viral-ambiguity-container", "children"),
 		Input("remove-detected-viral-genes-button", "n_clicks"),
 		Input("append-viral-genes-button", "n_clicks"),
+		Input("submit-viral-ambiguity-button", "n_clicks"),
 		State("detected-viral-genes-dropdown", "value"),
 		State("append-viral-genes-input", "value"),
+		State({"type": "viral-ambiguity-select", "feature": ALL}, "value"),
+		State({"type": "viral-ambiguity-select", "feature": ALL}, "id"),
 		prevent_initial_call=True,
 	)
-	def curate_viral_gene_list(remove_clicks, append_clicks, selected_genes, appended_text):
+	def curate_viral_gene_list(remove_clicks, append_clicks, submit_clicks, selected_genes, appended_text, ambiguity_values, ambiguity_ids):
 		"""Apply interactive remove/add edits to detected viral genes.
 
 		Use:
@@ -624,21 +684,7 @@ def register_vd_callbacks(app):
 		- updated dropdown options/value, list body, count, alert text/open state.
 		"""
 		history = get_state_store()
-		viral_state = history.get("viral_detection", {})
-
-		genes = set([g.strip() for g in viral_state.get("viral_genes", "").split(",") if g.strip()])
-		features = set([f.strip() for f in viral_state.get("viral_features", "").split(",") if f.strip()])
-		matched_features_by_gene = {
-			gene: set(gene_features)
-			for gene, gene_features in viral_state.get("matched_features_by_gene", {}).items()
-		}
-		detected_gene_sets = {
-			set_name: set(set_genes)
-			for set_name, set_genes in viral_state.get("detected_gene_sets", {}).items()
-		}
-
-		if not detected_gene_sets and genes:
-			detected_gene_sets = {"Detected": set(genes)}
+		per_virus = _load_per_virus(history.get("viral_detection", {}))
 
 		alert_text = ""
 		alert_open = False
@@ -646,12 +692,16 @@ def register_vd_callbacks(app):
 
 		if triggered == "remove-detected-viral-genes-button":
 			for gene in (selected_genes or []):
-				genes.discard(gene)
-				for feature in matched_features_by_gene.get(gene, set()):
-					features.discard(feature)
-				matched_features_by_gene.pop(gene, None)
-				for set_name in list(detected_gene_sets.keys()):
-					detected_gene_sets[set_name].discard(gene)
+				for gene_map in per_virus.values():
+					gene_map.pop(gene, None)
+
+		elif triggered == "submit-viral-ambiguity-button":
+			assignments = {
+				id_["feature"]: virus
+				for id_, virus in zip(ambiguity_ids or [], ambiguity_values or [])
+				if virus
+			}
+			per_virus = apply_virus_assignments(per_virus, assignments)
 
 		elif triggered == "append-viral-genes-button":
 			adata = get_dataset() or get_working_dataset()
@@ -669,11 +719,7 @@ def register_vd_callbacks(app):
 							matches.append(feature)
 
 					if matches:
-						gene_name = query
-						genes.add(gene_name)
-						matched_features_by_gene.setdefault(gene_name, set()).update(matches)
-						features.update(matches)
-						detected_gene_sets.setdefault("Manual Append", set()).add(gene_name)
+						per_virus.setdefault("Manual Append", {}).setdefault(query, set()).update(matches)
 					else:
 						not_found.append(query)
 
@@ -685,36 +731,19 @@ def register_vd_callbacks(app):
 					)
 					alert_open = True
 
-		detected_gene_sets = {
-			gene: set(gene_features)
-			for gene, gene_features in detected_gene_sets.items()
-		}
-		detected_gene_sets = {
-			set_name: sorted(set_genes)
-			for set_name, set_genes in sorted(detected_gene_sets.items())
-			if set_genes
-		}
+		new_state = derive_detection_state(per_virus)
+		update_state_store(viral_detection=new_state)
 
-		update_state_store(
-			viral_detection={
-				"viral_genes": ", ".join(sorted(genes)),
-				"viral_features": ", ".join(sorted(features)),
-				"detected_gene_sets": detected_gene_sets,
-				"matched_features_by_gene": {
-					gene: sorted(gene_features)
-					for gene, gene_features in sorted(matched_features_by_gene.items())
-				},
-			}
-		)
-
-		entries = _build_viral_gene_entries(genes, matched_features_by_gene)
-		list_text = _format_detected_grouped_list(detected_gene_sets, "No viral genes currently selected.")
+		matched_features_by_gene = new_state["matched_features_by_gene"]
+		entries = _build_viral_gene_entries(matched_features_by_gene.keys(), matched_features_by_gene)
+		list_text = _format_detected_grouped_list(new_state["detected_gene_sets"], "No viral genes currently selected.")
 
 		return (
 			entries,
 			[],
 			html.P(list_text, style={"fontSize": "13px", "color": "#6c757d", "whiteSpace": "pre-wrap"}),
-			str(len(genes)),
+			str(len(matched_features_by_gene)),
 			alert_text,
 			alert_open,
+			_build_ambiguity_children(find_ambiguous_features(per_virus)),
 		)
