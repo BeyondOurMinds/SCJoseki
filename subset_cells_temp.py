@@ -3,20 +3,20 @@ from pathlib import Path
 
 import numpy as np
 
-INPUT_PATH = r"C:\Users\jtspy\OneDrive\Desktop\Bioinformatics\ViralDatasets\EpsteinBarr\GSE165080_HC_LCL_annotated_compatible.h5ad"  # placeholder: .zip (10x) or .h5ad
-N_CELLS = 10000  # placeholder: number of cells to keep
+INPUT_PATH = r"C:\Users\jtspy\OneDrive\Desktop\Bioinformatics\ViralDatasets\MultiVirusTesting\GSE159556COVIDMatrix\GSE159556_RAW.zip"  # placeholder: .zip (10x) or .h5ad
+N_CELLS = 5000  # placeholder: number of cells to keep
 OUTPUT_PATH = None  # None -> "<input stem>_subset<N>.h5ad" next to the input
 SEED = 0
 
 # --- Loader: keep ONE of the two blocks below, comment out the other ---
 
 # Option A: 10x loader from scjoseki (zip of 10x files)
-# from viral_platform.io.loaders import load_file_from_path
-# adata = load_file_from_path(INPUT_PATH)
+from viral_platform.io.loaders import load_file_from_path
+adata = load_file_from_path(INPUT_PATH)
 
 # Option B: standard h5ad loading
-import scanpy as sc
-adata = sc.read_h5ad(INPUT_PATH)
+# import scanpy as sc
+# adata = sc.read_h5ad(INPUT_PATH)
 
 # --- Subset ---
 if N_CELLS >= adata.n_obs:

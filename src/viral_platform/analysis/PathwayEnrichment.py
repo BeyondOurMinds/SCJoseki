@@ -1,4 +1,5 @@
 import gseapy as gp
+import pandas as pd
 import logging
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,9 @@ def run_pathway_enrichment(de_results, method, gene_set="GO_Biological_Process_2
             results_df = enr.res2d
             print(results_df.columns.tolist())
             print(results_df.head())
-            # Filter results based on p-value cutoff
+            # gseapy may return stats as object dtype
+            results_df['FDR q-val'] = pd.to_numeric(results_df['FDR q-val'], errors='coerce')
+            logger.info("GSEA FDR cutoff=%s; min FDR=%s", pvalue_cutoff, results_df['FDR q-val'].min())
             significant_results = results_df[results_df['FDR q-val'] <= pvalue_cutoff]
         elif method == 'ORA':
 

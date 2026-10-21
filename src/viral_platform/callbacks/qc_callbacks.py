@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 _qc_tracker = get_tracker("QC Plots")
 _qc_filter_tracker = get_tracker("QC: Apply Filters")
+_qc_doublet_tracker = get_tracker("QC: Doublet Detection")
 
 
 def register_qc_callbacks(app):
@@ -155,6 +156,7 @@ def register_qc_callbacks(app):
         State("doublet-filter-checklist", "value"),
         prevent_initial_call=True,
     )
+    @_qc_doublet_tracker.track
     def run_scrublet(n_clicks, filter_opts):
         if not n_clicks:
             return no_update
@@ -165,16 +167,19 @@ def register_qc_callbacks(app):
             import scanpy as sc
 
             # Scrublet expects raw counts in X.
-            sc.pp.scrublet(adata)
+            with _qc_doublet_tracker.phase("analysis"):
+                sc.pp.scrublet(adata)
             n_doublets = int(adata.obs["predicted_doublet"].sum())
             msg = f"Detected {n_doublets} predicted doublets out of {adata.n_obs} cells."
             if filter_opts and "filter" in filter_opts:
-                filtered = adata[~adata.obs["predicted_doublet"].astype(bool)].copy()
-                set_working_dataset(filtered)
+                with _qc_doublet_tracker.phase("processing"):
+                    filtered = adata[~adata.obs["predicted_doublet"].astype(bool)].copy()
+                    set_working_dataset(filtered)
                 msg += f" Removed them; {filtered.n_obs} cells remain. Regenerate QC plots to refresh."
                 adata = filtered
-            fig = px.histogram(adata.obs, x="doublet_score", nbins=50, title="Doublet scores")
-            fig.update_layout(template="plotly_white")
+            with _qc_doublet_tracker.phase("visualization"):
+                fig = px.histogram(adata.obs, x="doublet_score", nbins=50, title="Doublet scores")
+                fig.update_layout(template="plotly_white")
             return html.Div([html.P(msg), dcc.Graph(figure=fig)])
         except Exception:
             logger.exception("Scrublet failed.")
