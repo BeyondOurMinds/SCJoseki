@@ -50,9 +50,9 @@ def create_pathway_enrichment_panel():
                                     dcc.Input(
                                         id="pathway-enrichment-pvalue-cutoff-input",
                                         type="number",
-                                        min=0.0001,
+                                        min=0,
                                         max=1,
-                                        step=0.001,
+                                        step=any,
                                         value=0.05,
                                         style={"width": "100%"},
                                     ),
