@@ -52,7 +52,7 @@ def create_pathway_enrichment_panel():
                                         type="number",
                                         min=0,
                                         max=1,
-                                        step=any,
+                                        step="any",
                                         value=0.05,
                                         style={"width": "100%"},
                                     ),
